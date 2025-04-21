@@ -29,62 +29,79 @@ uploaded_file = st.file_uploader("Upload a clothing image (PNG with transparency
 
 # Load MediaPipe pose model
 mp_pose = mp.solutions.pose
+mp_drawing = mp.solutions.drawing_utils
 pose = mp_pose.Pose(model_complexity=1, smooth_landmarks=True)
 
-# Global variable to store the uploaded T-shirt
+# Global variables for the uploaded T-shirt and mask
 tshirt_image = None
 cloth_mask = None
 
+# Handle clothing image upload
 if uploaded_file is not None:
     clothing_img = Image.open(uploaded_file).convert("RGBA")
     clothing_img = np.array(clothing_img)
     clothing_img = cv2.cvtColor(clothing_img, cv2.COLOR_RGBA2BGRA)
     tshirt_image = clothing_img
-    cloth_mask = clothing_img[:, :, 3] > 0
+    cloth_mask = clothing_img[:, :, 3] > 0  # Alpha channel mask
 
-    class VideoTransformer(VideoTransformerBase):
-        def transform(self, frame):
-            global tshirt_image, cloth_mask
-            img = frame.to_ndarray(format="bgr24")
-            frame = cv2.flip(img, 1)
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = pose.process(rgb_frame)
+# Define the video transformer
+class VideoTransformer(VideoTransformerBase):
+    def transform(self, frame):
+        global tshirt_image, cloth_mask
 
-            if results.pose_landmarks and tshirt_image is not None:
-                landmarks = results.pose_landmarks.landmark
-                left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
-                right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
-                left_hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP]
-                right_hip = landmarks[mp_pose.PoseLandmark.RIGHT_HIP]
-                left_chest = landmarks[mp_pose.PoseLandmark.LEFT_ELBOW]
-                right_chest = landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW]
+        img = frame.to_ndarray(format="bgr24")
+        frame = cv2.flip(img, 1)  # Mirror effect for webcam
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(rgb_frame)
 
-                chest_width = int(abs(left_chest.x - right_chest.x) * frame.shape[1] * 1.2)
-                shoulder_width = int(abs(left_shoulder.x - right_shoulder.x) * frame.shape[1] * 1.2)
-                width = max(chest_width, shoulder_width)
-                torso_height = int(abs(left_shoulder.y - (left_hip.y + right_hip.y) / 2) * frame.shape[0] * 1.5)
-                width, torso_height = max(100, width), max(100, torso_height)
+        # Draw pose landmarks (for debugging alignment)
+        if results.pose_landmarks:
+            mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
-                resized_clothing = cv2.resize(tshirt_image, (width, torso_height))
-                resized_mask = cv2.resize(cloth_mask.astype(np.uint8) * 255, (width, torso_height))
+        if results.pose_landmarks and tshirt_image is not None:
+            landmarks = results.pose_landmarks.landmark
+            left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
+            right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+            left_hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP]
+            right_hip = landmarks[mp_pose.PoseLandmark.RIGHT_HIP]
+            left_chest = landmarks[mp_pose.PoseLandmark.LEFT_ELBOW]
+            right_chest = landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW]
 
-                neck_x = (left_shoulder.x + right_shoulder.x) / 2
-                neck_y = (left_shoulder.y + right_shoulder.y) / 2
-                x = int(neck_x * frame.shape[1] - width / 2)
-                y = int(neck_y * frame.shape[0] - torso_height * 0.15)
+            # Calculate dimensions
+            chest_width = int(abs(left_chest.x - right_chest.x) * frame.shape[1] * 1.2)
+            shoulder_width = int(abs(left_shoulder.x - right_shoulder.x) * frame.shape[1] * 1.2)
+            width = max(chest_width, shoulder_width, 100)
+            torso_height = int(abs(left_shoulder.y - (left_hip.y + right_hip.y) / 2) * frame.shape[0] * 1.5)
+            torso_height = max(100, torso_height)
 
-                x, y = max(0, x), max(0, y)
-                clothing_crop_x = min(width, frame.shape[1] - x)
-                clothing_crop_y = min(torso_height, frame.shape[0] - y)
-                resized_clothing = resized_clothing[:clothing_crop_y, :clothing_crop_x]
-                resized_mask = resized_mask[:clothing_crop_y, :clothing_crop_x]
+            # Resize clothing and mask
+            resized_clothing = cv2.resize(tshirt_image, (width, torso_height))
+            resized_mask = cv2.resize(cloth_mask.astype(np.uint8) * 255, (width, torso_height))
 
-                alpha = resized_mask / 255.0
-                for c in range(3):
-                    frame[y:y + clothing_crop_y, x:x + clothing_crop_x, c] = (
-                        (1 - alpha) * frame[y:y + clothing_crop_y, x:x + clothing_crop_x, c] +
-                        alpha * resized_clothing[:, :, c]
-                    )
-            return frame
+            # Position the shirt at neck center
+            neck_x = (left_shoulder.x + right_shoulder.x) / 2
+            neck_y = (left_shoulder.y + right_shoulder.y) / 2
+            x = int(neck_x * frame.shape[1] - width / 2)
+            y = int(neck_y * frame.shape[0] - torso_height * 0.15)
 
-    webrtc_streamer(key="try-on", video_transformer_factory=VideoTransformer)
+            # Clamp to stay within frame bounds
+            x = max(0, min(x, frame.shape[1] - 1))
+            y = max(0, min(y, frame.shape[0] - 1))
+
+            # Crop if shirt goes off screen
+            clothing_crop_x = min(width, frame.shape[1] - x)
+            clothing_crop_y = min(torso_height, frame.shape[0] - y)
+            resized_clothing = resized_clothing[:clothing_crop_y, :clothing_crop_x]
+            resized_mask = resized_mask[:clothing_crop_y, :clothing_crop_x]
+
+            # Blend clothing onto frame
+            alpha = resized_mask / 255.0
+            for c in range(3):
+                frame[y:y + clothing_crop_y, x:x + clothing_crop_x, c] = (
+                    (1 - alpha) * frame[y:y + clothing_crop_y, x:x + clothing_crop_x, c] +
+                    alpha * resized_clothing[:, :, c]
+                )
+        return frame
+
+# Start the webcam regardless of upload
+webrtc_streamer(key="try-on", video_transformer_factory=VideoTransformer)

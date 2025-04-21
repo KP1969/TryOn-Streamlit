@@ -109,11 +109,18 @@ if uploaded_file is not None:
             frame = overlay
 
         with col2:
+            # Display frame on Streamlit without OpenCV window
             stframe.image(frame, channels="BGR")
 
+        # No need to call cv2.destroyAllWindows() as Streamlit will handle the display
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
-    cv2.destroyAllWindows()
+    # No need to call cv2.destroyAllWindows() in Streamlit
+
+  
+
+          
+         
 

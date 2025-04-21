@@ -87,18 +87,4 @@ if uploaded_file is not None:
                     )
             return frame
 
-    # 👇 Use high-res video constraints
-    webrtc_streamer(
-        key="try-on",
-        video_transformer_factory=VideoTransformer,
-        media_stream_constraints={
-            "video": {
-                "width": {"min": 1280, "ideal": 1920, "max": 1920},
-                "height": {"min": 720, "ideal": 1080, "max": 1080},
-                "frameRate": {"ideal": 30, "max": 60}
-            }
-        },
-        async_processing=True
-    )
-
-
+    webrtc_streamer(key="try-on", video_transformer_factory=VideoTransformer)
